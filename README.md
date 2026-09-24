@@ -35,7 +35,22 @@ En el PC no se instala nada: OBS recibe el video directamente.
 > Con un Apple ID gratuito, la app **caduca a los 7 días**. Para renovarla, vuelve a pasarla
 > con Sideloadly; tiene una opción de auto-refresh. Tus ajustes no se pierden.
 
-## 3. Configurar OBS
+## 3. Configurar OBS con el plugin (recomendado, baja latencia)
+
+El plugin está compilado para **OBS 31.0.0 (64 bits)**.
+
+1. En **Actions**, descarga el artifact **PhoneCam-OBS-plugin** y descomprímelo para obtener `phonecam.dll`.
+2. Cierra OBS y copia `phonecam.dll` a `C:\Program Files\obs-studio\obs-plugins\64bit\`.
+   Windows te pedirá permiso de administrador.
+3. Abre OBS. En **Fuentes**, haz clic en **+** y elige **PhoneCam (iPhone)**.
+4. En **Dirección** escribe `127.0.0.1` si usas cable con iproxy, o la IP que muestra la app si usas Wi‑Fi.
+   El puerto es `5000`.
+
+El plugin solo se conecta mientras la fuente se ve en la escena. Si la ocultas, el iPhone deja de codificar.
+
+## 3b. Configurar OBS sin plugin (Fuente multimedia)
+
+Funciona, pero con más retraso (~0,7 s), porque la Fuente multimedia agrega su propio búfer.
 
 1. Abre PhoneCam. La primera vez acepta el permiso de cámara.
    En el panel aparece algo como `tcp://192.168.1.50:5000`.
