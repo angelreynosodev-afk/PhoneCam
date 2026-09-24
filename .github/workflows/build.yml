@@ -1,0 +1,35 @@
+name: Build IPA
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generar proyecto Xcode
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Compilar (sin firmar)
+        run: |
+          xcodebuild -project PhoneCam.xcodeproj -target PhoneCam \
+            -configuration Release -sdk iphoneos \
+            SYMROOT="$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Empaquetar IPA
+        run: |
+          mkdir Payload
+          cp -R build/Release-iphoneos/PhoneCam.app Payload/
+          zip -qry PhoneCam.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhoneCam-ipa
+          path: PhoneCam.ipa
