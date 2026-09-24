@@ -8,7 +8,7 @@ jobs:
   build:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Generar proyecto Xcode
         run: |
@@ -29,7 +29,7 @@ jobs:
           cp -R build/Release-iphoneos/PhoneCam.app Payload/
           zip -qry PhoneCam.ipa Payload
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: PhoneCam-ipa
           path: PhoneCam.ipa
