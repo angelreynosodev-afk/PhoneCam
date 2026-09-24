@@ -1,13 +1,18 @@
+import CoreMedia
 import Foundation
 import Network
 
-/// Servidor TCP: OBS se conecta a tcp://IP:5000 y recibe MPEG-TS.
-/// Un solo cliente a la vez; si llega otro, reemplaza al anterior.
+/// Servidor TCP en el puerto 5000. Un solo cliente a la vez; si llega otro, reemplaza al anterior.
+/// - El plugin de OBS saluda con "PCAM" al conectar y recibe frames H.264 crudos (modo `.raw`).
+/// - Cualquier otro cliente (la "Fuente multimedia" de OBS) recibe MPEG-TS (modo `.ts`).
 /// Todo corre en `queue`.
 final class StreamServer {
+    enum Mode { case pending, ts, raw }
+
     let queue = DispatchQueue(label: "net", qos: .userInteractive)
     var onClientChange: ((Bool) -> Void)?
     var onNeedKeyframe: (() -> Void)?
+    private(set) var mode: Mode = .pending
 
     private let port: UInt16
     private var listener: NWListener?
@@ -16,7 +21,7 @@ final class StreamServer {
     private var waitKey = true
     /// Si la red no da abasto se descartan frames hasta el siguiente keyframe,
     /// en lugar de acumular retraso.
-    private let maxPending = 2_000_000
+    private let maxPending = 500_000
 
     init(port: UInt16) {
         self.port = port
@@ -56,6 +61,7 @@ final class StreamServer {
     private func accept(_ c: NWConnection) {
         conn?.cancel()
         conn = c
+        mode = .pending
         pendingBytes = 0
         waitKey = true
         c.stateUpdateHandler = { [weak self, weak c] state in
@@ -68,12 +74,23 @@ final class StreamServer {
         c.start(queue: queue)
         receiveLoop(c)
         onClientChange?(true)
-        onNeedKeyframe?()
+
+        // La Fuente multimedia no manda nada: si no hubo saludo, es MPEG-TS.
+        queue.asyncAfter(deadline: .now() + 0.3) { [weak self, weak c] in
+            guard let self = self, let c = c, self.conn === c, self.mode == .pending else { return }
+            self.mode = .ts
+            self.onNeedKeyframe?()
+        }
     }
 
-    /// Solo sirve para detectar cuando OBS cierra la conexión.
+    /// Detecta el saludo del plugin y cuándo el cliente cierra la conexión.
     private func receiveLoop(_ c: NWConnection) {
-        c.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] _, _, done, error in
+        c.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, done, error in
+            if let self = self, self.conn === c, self.mode == .pending,
+               let data = data, data.starts(with: Array("PCAM".utf8)) {
+                self.mode = .raw
+                self.onNeedKeyframe?()
+            }
             if done || error != nil {
                 c.cancel()
                 return
@@ -90,7 +107,7 @@ final class StreamServer {
 
     /// Decide si este frame se envía. Se consulta antes de muxear.
     func wants(isKey: Bool) -> Bool {
-        guard conn != nil else { return false }
+        guard conn != nil, mode != .pending else { return false }
         if pendingBytes > maxPending {
             if !waitKey {
                 waitKey = true
@@ -115,6 +132,21 @@ final class StreamServer {
             if error != nil { c.cancel() }
         })
     }
+}
+
+/// Frame para el plugin: [u32 BE largo][u64 BE pts en µs][u8 flags][H.264 Annex B].
+func rawFrame(_ es: [UInt8], pts: CMTime, isKey: Bool) -> [UInt8] {
+    var out = [UInt8]()
+    out.reserveCapacity(es.count + 13)
+    let n = UInt32(es.count)
+    out += [UInt8(n >> 24), UInt8((n >> 16) & 0xFF), UInt8((n >> 8) & 0xFF), UInt8(n & 0xFF)]
+    let us = UInt64(max(0, CMTimeConvertScale(pts, timescale: 1_000_000, method: .default).value))
+    for shift in stride(from: 56, through: 0, by: -8) {
+        out.append(UInt8((us >> UInt64(shift)) & 0xFF))
+    }
+    out.append(isKey ? 1 : 0)
+    out += es
+    return out
 }
 
 /// IP del iPhone en la red Wi-Fi (interfaz en0).

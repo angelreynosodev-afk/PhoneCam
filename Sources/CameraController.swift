@@ -44,7 +44,11 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
             guard let self = self else { return }
             self.server.queue.async {
                 guard self.server.wants(isKey: isKey) else { return }
-                self.server.send(self.muxer.mux(bytes, pts: pts, isKey: isKey))
+                if self.server.mode == .raw {
+                    self.server.send(rawFrame(bytes, pts: pts, isKey: isKey))
+                } else {
+                    self.server.send(self.muxer.mux(bytes, pts: pts, isKey: isKey))
+                }
             }
         }
         server.onNeedKeyframe = { [weak self] in

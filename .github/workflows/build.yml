@@ -33,3 +33,17 @@ jobs:
         with:
           name: PhoneCam-ipa
           path: PhoneCam.ipa
+
+  obs-plugin:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Compilar plugin de OBS
+        shell: pwsh
+        run: ./obs-plugin/build.ps1
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: PhoneCam-OBS-plugin
+          path: obs-plugin/out/phonecam.dll
