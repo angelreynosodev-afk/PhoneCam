@@ -48,6 +48,13 @@ El plugin está compilado para **OBS 31.0.0 (64 bits)**.
 
 El plugin solo se conecta mientras la fuente se ve en la escena. Si la ocultas, el iPhone deja de codificar.
 
+**Control desde OBS:** en las propiedades de la fuente, el grupo **Cámara** tiene resolución, lente, zoom,
+balance de blancos y bloqueo de enfoque y exposición. OBS manda: al conectar, el iPhone toma esos ajustes.
+Si cambias algo desde el teléfono, también se guarda en OBS; lo verás la próxima vez que abras las propiedades.
+
+**GPU:** "Decodificar con la GPU" viene activado. Usa D3D11VA y, si no está disponible, la CPU.
+En el registro de OBS verás `[phonecam] decodificando por GPU (d3d11va)` o `por CPU`.
+
 ## 3b. Configurar OBS sin plugin (Fuente multimedia)
 
 Funciona, pero con más retraso (~0,7 s), porque la Fuente multimedia agrega su propio búfer.

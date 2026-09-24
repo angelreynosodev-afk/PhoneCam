@@ -64,6 +64,11 @@ struct ContentView: View {
                     Text(cam.clientConnected ? "OBS conectado" : "Esperando OBS…")
                         .font(.headline)
                 }
+                if cam.controlledByPC {
+                    Label("Controlable desde OBS", systemImage: "desktopcomputer")
+                        .font(.caption)
+                        .foregroundColor(.green)
+                }
                 Text("tcp://\(cam.address):\(String(CameraController.port))")
                     .font(.system(.footnote, design: .monospaced))
                     .textSelection(.enabled)

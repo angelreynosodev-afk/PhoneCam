@@ -1,12 +1,15 @@
 /*
- * PhoneCam: fuente de OBS que recibe el video del iPhone con la menor latencia posible.
+ * PhoneCam: fuente de OBS que recibe el video del iPhone con la menor latencia posible
+ * y permite controlar la cámara desde las propiedades de la fuente.
  *
- * Protocolo (TCP): al conectar se envía "PCAM1\n"; el iPhone responde con frames
- *   [u32 BE largo][u64 BE pts en µs][u8 flags (1 = keyframe)][H.264 Annex B]
+ * Protocolo (TCP):
+ *   PC -> iPhone: "PCAM1\n" al conectar, luego líneas JSON con los ajustes de la cámara.
+ *   iPhone -> PC: [u32 BE largo][u64 BE pts en µs][u8 flags][payload]
+ *                 flags & 0x01: keyframe · flags & 0x80: mensaje de estado JSON (no es video)
  *
  * A diferencia de la "Fuente multimedia", aquí no hay reloj de reproducción ni búfer:
- * el decoder corre en un solo hilo con LOW_DELAY y cada frame se entrega a OBS
- * apenas se decodifica (fuente async "unbuffered").
+ * el decoder corre con LOW_DELAY (por GPU con D3D11VA si está disponible) y cada frame
+ * se entrega a OBS apenas se decodifica (fuente async "unbuffered").
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -17,7 +20,9 @@
 #include <obs-module.h>
 #include <util/platform.h>
 #include <libavcodec/avcodec.h>
+#include <libavutil/hwcontext.h>
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -30,6 +35,8 @@ MODULE_EXPORT const char *obs_module_description(void)
 
 #define HEADER_SIZE 13
 #define MAX_FRAME (16 * 1024 * 1024)
+#define FLAG_KEY 0x01
+#define FLAG_STATE 0x80
 
 struct phonecam {
 	obs_source_t *source;
@@ -37,13 +44,16 @@ struct phonecam {
 	volatile LONG stop;
 	volatile LONG reconnect;
 
-	SRWLOCK lock; /* protege host, port y sock */
+	SRWLOCK lock; /* protege todo lo de abajo */
 	char host[256];
 	int port;
+	bool hw_decode;
+	char ctl[512]; /* último JSON de ajustes, terminado en '\n' */
 	SOCKET sock;
 };
 
 /* ------------------------------------------------------------------------- */
+/* Red                                                                       */
 
 static void wait_ms(struct phonecam *pc, int ms)
 {
@@ -116,7 +126,77 @@ static bool recv_all(struct phonecam *pc, SOCKET s, uint8_t *buf, int len)
 	return true;
 }
 
+/* Llamar con pc->lock tomado en modo exclusivo. */
+static void send_ctl_locked(struct phonecam *pc)
+{
+	if (pc->sock != INVALID_SOCKET && pc->ctl[0])
+		send(pc->sock, pc->ctl, (int)strlen(pc->ctl), 0);
+}
+
 /* ------------------------------------------------------------------------- */
+/* Ajustes de cámara <-> JSON                                                */
+
+static void build_ctl(obs_data_t *settings, char *out, size_t size)
+{
+	/* El zoom viaja en centésimas para no depender del separador decimal del sistema. */
+	int zoom100 = (int)(obs_data_get_double(settings, "zoom") * 100.0 + 0.5);
+	snprintf(out, size, "{\"mode\":\"%s\",\"lens\":\"%s\",\"zoom100\":%d,\"wbAuto\":%s,\"temp\":%d,\"lock\":%s}\n",
+		 obs_data_get_string(settings, "mode"), obs_data_get_string(settings, "lens"), zoom100,
+		 obs_data_get_bool(settings, "wb_auto") ? "true" : "false", (int)obs_data_get_int(settings, "temp"),
+		 obs_data_get_bool(settings, "lock") ? "true" : "false");
+}
+
+struct state_task {
+	obs_weak_source_t *weak;
+	obs_data_t *state;
+};
+
+/* Corre en el hilo de la UI: guarda en la fuente lo que se cambió desde el iPhone. */
+static void apply_state_task(void *param)
+{
+	struct state_task *t = param;
+	obs_source_t *src = obs_weak_source_get_source(t->weak);
+	if (src) {
+		obs_data_t *s = obs_source_get_settings(src);
+		obs_data_t *st = t->state;
+		if (obs_data_has_user_value(st, "mode"))
+			obs_data_set_string(s, "mode", obs_data_get_string(st, "mode"));
+		if (obs_data_has_user_value(st, "lens"))
+			obs_data_set_string(s, "lens", obs_data_get_string(st, "lens"));
+		if (obs_data_has_user_value(st, "zoom100"))
+			obs_data_set_double(s, "zoom", (double)obs_data_get_int(st, "zoom100") / 100.0);
+		if (obs_data_has_user_value(st, "wbAuto"))
+			obs_data_set_bool(s, "wb_auto", obs_data_get_bool(st, "wbAuto"));
+		if (obs_data_has_user_value(st, "temp"))
+			obs_data_set_int(s, "temp", obs_data_get_int(st, "temp"));
+		if (obs_data_has_user_value(st, "lock"))
+			obs_data_set_bool(s, "lock", obs_data_get_bool(st, "lock"));
+		obs_data_release(s);
+		obs_source_release(src);
+	}
+	obs_data_release(t->state);
+	obs_weak_source_release(t->weak);
+	bfree(t);
+}
+
+static void handle_state(struct phonecam *pc, const uint8_t *json, int len)
+{
+	char *str = bmalloc((size_t)len + 1);
+	memcpy(str, json, (size_t)len);
+	str[len] = 0;
+	obs_data_t *state = obs_data_create_from_json(str);
+	bfree(str);
+	if (!state)
+		return;
+
+	struct state_task *t = bzalloc(sizeof(struct state_task));
+	t->weak = obs_source_get_weak_source(pc->source);
+	t->state = state;
+	obs_queue_task(OBS_TASK_UI, apply_state_task, t, false);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Decodificación                                                            */
 
 static void output_frame(struct phonecam *pc, const AVFrame *f)
 {
@@ -154,21 +234,68 @@ static void output_frame(struct phonecam *pc, const AVFrame *f)
 	obs_source_output_video(pc->source, &out);
 }
 
-static void run_session(struct phonecam *pc, SOCKET s)
+static enum AVPixelFormat get_hw_format(AVCodecContext *ctx, const enum AVPixelFormat *fmts)
+{
+	enum AVPixelFormat want = (enum AVPixelFormat)(intptr_t)ctx->opaque;
+	for (const enum AVPixelFormat *p = fmts; *p != AV_PIX_FMT_NONE; p++) {
+		if (*p == want)
+			return *p;
+	}
+	return avcodec_default_get_format(ctx, fmts);
+}
+
+/* Intenta D3D11VA y luego DXVA2. Devuelve el formato de píxel de GPU, o NONE si se usa CPU. */
+static enum AVPixelFormat init_hw(AVCodecContext *ctx, const AVCodec *codec)
+{
+	static const enum AVHWDeviceType types[] = {AV_HWDEVICE_TYPE_D3D11VA, AV_HWDEVICE_TYPE_DXVA2};
+
+	for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
+		enum AVPixelFormat fmt = AV_PIX_FMT_NONE;
+		const AVCodecHWConfig *cfg;
+		for (int j = 0; (cfg = avcodec_get_hw_config(codec, j)) != NULL; j++) {
+			if ((cfg->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) && cfg->device_type == types[i]) {
+				fmt = cfg->pix_fmt;
+				break;
+			}
+		}
+		if (fmt == AV_PIX_FMT_NONE)
+			continue;
+
+		AVBufferRef *dev = NULL;
+		if (av_hwdevice_ctx_create(&dev, types[i], NULL, NULL, 0) < 0)
+			continue;
+
+		ctx->hw_device_ctx = dev; /* el contexto se queda con la referencia */
+		ctx->opaque = (void *)(intptr_t)fmt;
+		ctx->get_format = get_hw_format;
+		blog(LOG_INFO, "[phonecam] decodificando por GPU (%s)", av_hwdevice_get_type_name(types[i]));
+		return fmt;
+	}
+
+	blog(LOG_INFO, "[phonecam] decodificando por CPU");
+	return AV_PIX_FMT_NONE;
+}
+
+static void run_session(struct phonecam *pc, SOCKET s, bool use_hw)
 {
 	const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_H264);
 	AVCodecContext *ctx = codec ? avcodec_alloc_context3(codec) : NULL;
 	AVPacket *pkt = av_packet_alloc();
 	AVFrame *frame = av_frame_alloc();
+	AVFrame *sw = av_frame_alloc();
 	uint8_t *buf = NULL;
 	int buf_size = 0;
 
-	if (!ctx || !pkt || !frame)
+	if (!ctx || !pkt || !frame || !sw)
 		goto done;
 
 	/* Un solo hilo + LOW_DELAY: el decoder devuelve cada frame en cuanto lo recibe. */
 	ctx->thread_count = 1;
 	ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
+	enum AVPixelFormat hw_fmt = use_hw ? init_hw(ctx, codec) : AV_PIX_FMT_NONE;
+	if (!use_hw)
+		blog(LOG_INFO, "[phonecam] decodificando por CPU");
+
 	if (avcodec_open2(ctx, codec, NULL) < 0)
 		goto done;
 
@@ -194,20 +321,35 @@ static void run_session(struct phonecam *pc, SOCKET s)
 			break;
 		memset(buf + len, 0, AV_INPUT_BUFFER_PADDING_SIZE);
 
+		if (hdr[12] & FLAG_STATE) {
+			handle_state(pc, buf, len);
+			continue;
+		}
+
 		pkt->data = buf;
 		pkt->size = len;
-		pkt->flags = (hdr[12] & 1) ? AV_PKT_FLAG_KEY : 0;
+		pkt->flags = (hdr[12] & FLAG_KEY) ? AV_PKT_FLAG_KEY : 0;
 		if (avcodec_send_packet(ctx, pkt) < 0)
 			continue;
 
 		while (avcodec_receive_frame(ctx, frame) == 0) {
-			output_frame(pc, frame);
+			if (hw_fmt != AV_PIX_FMT_NONE && frame->format == hw_fmt) {
+				/* GPU -> memoria (NV12). Lo pesado, decodificar, ya lo hizo la GPU. */
+				if (av_hwframe_transfer_data(sw, frame, 0) == 0) {
+					av_frame_copy_props(sw, frame);
+					output_frame(pc, sw);
+				}
+				av_frame_unref(sw);
+			} else {
+				output_frame(pc, frame);
+			}
 			av_frame_unref(frame);
 		}
 	}
 
 done:
 	free(buf);
+	av_frame_free(&sw);
 	av_frame_free(&frame);
 	av_packet_free(&pkt);
 	avcodec_free_context(&ctx);
@@ -218,6 +360,7 @@ static DWORD WINAPI worker(LPVOID param)
 	struct phonecam *pc = param;
 	char host[256];
 	int port;
+	bool use_hw;
 
 	while (!pc->stop) {
 		InterlockedExchange(&pc->reconnect, 0);
@@ -232,6 +375,7 @@ static DWORD WINAPI worker(LPVOID param)
 		AcquireSRWLockShared(&pc->lock);
 		memcpy(host, pc->host, sizeof(host));
 		port = pc->port;
+		use_hw = pc->hw_decode;
 		ReleaseSRWLockShared(&pc->lock);
 
 		SOCKET s = connect_to(host, port);
@@ -240,13 +384,15 @@ static DWORD WINAPI worker(LPVOID param)
 			continue;
 		}
 
-		AcquireSRWLockExclusive(&pc->lock);
-		pc->sock = s;
-		ReleaseSRWLockExclusive(&pc->lock);
-
+		/* El saludo tiene que llegar antes que cualquier ajuste. */
 		if (send(s, "PCAM1\n", 6, 0) == 6) {
+			AcquireSRWLockExclusive(&pc->lock);
+			pc->sock = s;
+			send_ctl_locked(pc);
+			ReleaseSRWLockExclusive(&pc->lock);
+
 			blog(LOG_INFO, "[phonecam] conectado a %s:%d", host, port);
-			run_session(pc, s);
+			run_session(pc, s, use_hw);
 			blog(LOG_INFO, "[phonecam] desconectado");
 		}
 
@@ -262,6 +408,7 @@ static DWORD WINAPI worker(LPVOID param)
 }
 
 /* ------------------------------------------------------------------------- */
+/* Fuente de OBS                                                             */
 
 static const char *pc_get_name(void *unused)
 {
@@ -282,14 +429,22 @@ static void pc_update(void *data, obs_data_t *settings)
 	struct phonecam *pc = data;
 	const char *host = obs_data_get_string(settings, "host");
 	int port = (int)obs_data_get_int(settings, "port");
+	bool hw = obs_data_get_bool(settings, "hw_decode");
+	char ctl[sizeof(pc->ctl)];
+	build_ctl(settings, ctl, sizeof(ctl));
 
 	AcquireSRWLockExclusive(&pc->lock);
-	bool changed = strcmp(pc->host, host) != 0 || pc->port != port;
+	bool reconnect = strcmp(pc->host, host) != 0 || pc->port != port || pc->hw_decode != hw;
+	bool ctl_changed = strcmp(pc->ctl, ctl) != 0;
 	snprintf(pc->host, sizeof(pc->host), "%s", host);
 	pc->port = port;
+	pc->hw_decode = hw;
+	memcpy(pc->ctl, ctl, sizeof(ctl));
+	if (ctl_changed && !reconnect)
+		send_ctl_locked(pc);
 	ReleaseSRWLockExclusive(&pc->lock);
 
-	if (changed) {
+	if (reconnect) {
 		InterlockedExchange(&pc->reconnect, 1);
 		kick_socket(pc);
 	}
@@ -325,18 +480,61 @@ static void pc_defaults(obs_data_t *settings)
 {
 	obs_data_set_default_string(settings, "host", "127.0.0.1");
 	obs_data_set_default_int(settings, "port", 5000);
+	obs_data_set_default_bool(settings, "hw_decode", true);
+	obs_data_set_default_string(settings, "mode", "p720_30");
+	obs_data_set_default_string(settings, "lens", "wide");
+	obs_data_set_default_double(settings, "zoom", 1.0);
+	obs_data_set_default_bool(settings, "wb_auto", true);
+	obs_data_set_default_int(settings, "temp", 5000);
+	obs_data_set_default_bool(settings, "lock", false);
+}
+
+static bool wb_auto_modified(obs_properties_t *props, obs_property_t *p, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(p);
+	obs_property_set_enabled(obs_properties_get(props, "temp"), !obs_data_get_bool(settings, "wb_auto"));
+	return true;
 }
 
 static obs_properties_t *pc_properties(void *unused)
 {
 	UNUSED_PARAMETER(unused);
-	obs_properties_t *p = obs_properties_create();
-	obs_properties_add_text(p, "host", "Dirección del iPhone", OBS_TEXT_DEFAULT);
-	obs_properties_add_int(p, "port", "Puerto", 1, 65535, 1);
-	obs_properties_add_text(p, "help",
+	obs_properties_t *props = obs_properties_create();
+	obs_property_t *p;
+
+	obs_properties_t *cam = obs_properties_create();
+	p = obs_properties_add_list(cam, "mode", "Resolución", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(p, "720p · 30 fps", "p720_30");
+	obs_property_list_add_string(p, "720p · 60 fps", "p720_60");
+	obs_property_list_add_string(p, "1080p · 30 fps", "p1080_30");
+	obs_property_list_add_string(p, "1080p · 60 fps", "p1080_60");
+	obs_property_list_add_string(p, "4K · 30 fps", "p2160_30");
+
+	p = obs_properties_add_list(cam, "lens", "Lente", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(p, "Normal", "wide");
+	obs_property_list_add_string(p, "Tele 2x", "tele");
+	obs_property_list_add_string(p, "Frontal", "front");
+
+	obs_properties_add_float_slider(cam, "zoom", "Zoom", 1.0, 8.0, 0.1);
+
+	p = obs_properties_add_bool(cam, "wb_auto", "Balance de blancos automático");
+	obs_property_set_modified_callback(p, wb_auto_modified);
+	p = obs_properties_add_int_slider(cam, "temp", "Temperatura de color", 2500, 8000, 50);
+	obs_property_int_set_suffix(p, " K");
+
+	obs_properties_add_bool(cam, "lock", "Bloquear enfoque y exposición");
+	obs_properties_add_group(props, "camera", "Cámara", OBS_GROUP_NORMAL, cam);
+
+	obs_properties_t *conn = obs_properties_create();
+	obs_properties_add_text(conn, "host", "Dirección del iPhone", OBS_TEXT_DEFAULT);
+	obs_properties_add_int(conn, "port", "Puerto", 1, 65535, 1);
+	obs_properties_add_bool(conn, "hw_decode", "Decodificar con la GPU");
+	obs_properties_add_text(conn, "help",
 				"Por cable (iproxy): 127.0.0.1\nPor Wi‑Fi: la IP que muestra la app PhoneCam",
 				OBS_TEXT_INFO);
-	return p;
+	obs_properties_add_group(props, "connection", "Conexión", OBS_GROUP_NORMAL, conn);
+
+	return props;
 }
 
 static struct obs_source_info phonecam_source = {

@@ -4,6 +4,7 @@ import Network
 
 /// Servidor TCP en el puerto 5000. Un solo cliente a la vez; si llega otro, reemplaza al anterior.
 /// - El plugin de OBS saluda con "PCAM" al conectar y recibe frames H.264 crudos (modo `.raw`).
+///   Después manda líneas JSON con ajustes de cámara; el iPhone le responde con su estado.
 /// - Cualquier otro cliente (la "Fuente multimedia" de OBS) recibe MPEG-TS (modo `.ts`).
 /// Todo corre en `queue`.
 final class StreamServer {
@@ -12,11 +13,16 @@ final class StreamServer {
     let queue = DispatchQueue(label: "net", qos: .userInteractive)
     var onClientChange: ((Bool) -> Void)?
     var onNeedKeyframe: (() -> Void)?
+    /// Ajustes recibidos del plugin (se llama en `queue`).
+    var onControl: (([String: Any]) -> Void)?
+    /// Se llama en `queue` cuando el plugin termina de identificarse.
+    var onPluginReady: (() -> Void)?
     private(set) var mode: Mode = .pending
 
     private let port: UInt16
     private var listener: NWListener?
     private var conn: NWConnection?
+    private var rx = [UInt8]()
     private var pendingBytes = 0
     private var waitKey = true
     /// Si la red no da abasto se descartan frames hasta el siguiente keyframe,
@@ -62,6 +68,7 @@ final class StreamServer {
         conn?.cancel()
         conn = c
         mode = .pending
+        rx.removeAll()
         pendingBytes = 0
         waitKey = true
         c.stateUpdateHandler = { [weak self, weak c] state in
@@ -83,13 +90,12 @@ final class StreamServer {
         }
     }
 
-    /// Detecta el saludo del plugin y cuándo el cliente cierra la conexión.
+    /// Lee lo que manda el cliente: el saludo del plugin, sus ajustes, y el cierre de la conexión.
     private func receiveLoop(_ c: NWConnection) {
         c.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, done, error in
-            if let self = self, self.conn === c, self.mode == .pending,
-               let data = data, data.starts(with: Array("PCAM".utf8)) {
-                self.mode = .raw
-                self.onNeedKeyframe?()
+            if let self = self, self.conn === c, let data = data, !data.isEmpty {
+                self.rx += data
+                self.processLines()
             }
             if done || error != nil {
                 c.cancel()
@@ -97,6 +103,35 @@ final class StreamServer {
             }
             self?.receiveLoop(c)
         }
+    }
+
+    private func processLines() {
+        while let nl = rx.firstIndex(of: 0x0A) {
+            let line = Array(rx[..<nl])
+            rx.removeSubrange(...nl)
+            if mode == .pending, line.starts(with: Array("PCAM".utf8)) {
+                mode = .raw
+                onNeedKeyframe?()
+                onPluginReady?()
+            } else if mode == .raw,
+                      let obj = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any] {
+                onControl?(obj)
+            }
+        }
+        if rx.count > 65_536 { rx.removeAll() }
+    }
+
+    /// Envía el estado de la cámara al plugin (no pasa por el control de congestión del video).
+    func sendState(_ state: [String: Any]) {
+        guard let c = conn, mode == .raw,
+              let json = try? JSONSerialization.data(withJSONObject: state) else { return }
+        var out = [UInt8]()
+        let n = UInt32(json.count)
+        out += [UInt8(n >> 24), UInt8((n >> 16) & 0xFF), UInt8((n >> 8) & 0xFF), UInt8(n & 0xFF)]
+        out += [UInt8](repeating: 0, count: 8)
+        out.append(0x80)
+        out += json
+        c.send(content: Data(out), completion: .contentProcessed { _ in })
     }
 
     private func drop(_ c: NWConnection) {

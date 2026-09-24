@@ -6,16 +6,18 @@ import UIKit
 final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     static let port: UInt16 = 5000
 
-    @Published var mode: VideoMode { didSet { save(); reconfigure() } }
-    @Published var lens: Lens { didSet { save(); reconfigure() } }
-    @Published var zoom: CGFloat = 1 { didSet { applyZoom() } }
-    @Published var wbAuto: Bool { didSet { save(); applyWhiteBalance() } }
-    @Published var temperature: Float { didSet { save(); applyWhiteBalance() } }
-    @Published var aeafLocked = false { didSet { applyLock() } }
+    @Published var mode: VideoMode { didSet { save(); reconfigure(); pushState() } }
+    @Published var lens: Lens { didSet { save(); reconfigure(); pushState() } }
+    @Published var zoom: CGFloat = 1 { didSet { applyZoom(); pushState() } }
+    @Published var wbAuto: Bool { didSet { save(); applyWhiteBalance(); pushState() } }
+    @Published var temperature: Float { didSet { save(); applyWhiteBalance(); pushState() } }
+    @Published var aeafLocked = false { didSet { applyLock(); pushState() } }
 
     @Published private(set) var maxZoom: CGFloat = 1
     @Published private(set) var wbSupported = true
     @Published private(set) var clientConnected = false
+    /// true cuando el que está conectado es el plugin (los ajustes también se controlan desde OBS).
+    @Published private(set) var controlledByPC = false
     @Published private(set) var status = "Iniciando…"
     @Published private(set) var address = "…"
     @Published private(set) var configVersion = 0
@@ -31,6 +33,7 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
     private let muxer = TSMuxer()
     private let server = StreamServer(port: CameraController.port)
     private var streaming = false // solo se lee/escribe en videoQueue
+    private var applyingRemote = false // solo en main: evita reenviarle a OBS lo que OBS mandó
 
     override init() {
         let d = UserDefaults.standard
@@ -61,8 +64,48 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
                 self.streaming = connected
                 if connected { self.encoder.forceKeyframe = true } else { self.encoder.invalidate() }
             }
-            DispatchQueue.main.async { self.clientConnected = connected }
+            DispatchQueue.main.async {
+                self.clientConnected = connected
+                if !connected { self.controlledByPC = false }
+            }
         }
+        server.onPluginReady = { [weak self] in
+            DispatchQueue.main.async { self?.controlledByPC = true }
+        }
+        server.onControl = { [weak self] settings in
+            DispatchQueue.main.async { self?.applyRemote(settings) }
+        }
+    }
+
+    // MARK: - Control desde OBS
+
+    private func applyRemote(_ s: [String: Any]) {
+        applyingRemote = true
+        defer { applyingRemote = false }
+
+        if let v = s["mode"] as? String, let m = VideoMode(rawValue: v), m != mode { mode = m }
+        if let v = s["lens"] as? String, let l = Lens(rawValue: v), l != lens { lens = l }
+        if let v = s["zoom100"] as? Int {
+            let z = min(max(CGFloat(v) / 100, 1), 8)
+            if abs(z - zoom) > 0.005 { zoom = z }
+        }
+        if let v = s["wbAuto"] as? Bool, v != wbAuto { wbAuto = v }
+        if let v = s["temp"] as? Int, Float(v) != temperature { temperature = Float(v) }
+        if let v = s["lock"] as? Bool, v != aeafLocked { aeafLocked = v }
+    }
+
+    /// Avisa a OBS de un cambio hecho en el teléfono, para que quede guardado en la escena.
+    private func pushState() {
+        guard !applyingRemote else { return }
+        let state: [String: Any] = [
+            "mode": mode.rawValue,
+            "lens": lens.rawValue,
+            "zoom100": Int((zoom * 100).rounded()),
+            "wbAuto": wbAuto,
+            "temp": Int(temperature),
+            "lock": aeafLocked,
+        ]
+        server.queue.async { self.server.sendState(state) }
     }
 
     // MARK: - Ciclo de vida
@@ -169,11 +212,16 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
         let maxZ = min(dev.activeFormat.videoMaxZoomFactor, 8)
         let wbOK = dev.isLockingWhiteBalanceWithCustomDeviceGainsSupported
         DispatchQueue.main.async {
+            // Se conservan zoom, balance y bloqueo: la cámara nueva arranca en automático
+            // y hay que volver a aplicarlos.
             self.maxZoom = maxZ
             self.wbSupported = wbOK
-            self.zoom = 1
-            self.aeafLocked = false
+            if self.zoom > maxZ { self.zoom = maxZ } else { self.applyZoom() }
             self.applyWhiteBalance()
+            if self.aeafLocked {
+                // Dejar que enfoque y exposición se asienten antes de bloquearlos.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.applyLock() }
+            }
             self.status = "\(dims.width)×\(dims.height) @ \(fps) fps\(note)"
             self.configVersion += 1
         }
