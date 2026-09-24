@@ -11,10 +11,16 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
     @Published var zoom: CGFloat = 1 { didSet { applyZoom(); pushState() } }
     @Published var wbAuto: Bool { didSet { save(); applyWhiteBalance(); pushState() } }
     @Published var temperature: Float { didSet { save(); applyWhiteBalance(); pushState() } }
-    @Published var aeafLocked = false { didSet { applyLock(); pushState() } }
+    @Published var afAuto: Bool { didSet { save(); applyFocus(); pushState() } }
+    /// Posición del lente: 0 = lo más cerca, 1 = lo más lejos.
+    @Published var focusPosition: Float { didSet { save(); applyFocus(); pushState() } }
+    /// Compensación de exposición en EV (negativo = más oscuro).
+    @Published var exposureBias: Float { didSet { save(); applyExposure(); pushState() } }
+    @Published var aeLocked = false { didSet { applyExposure(); pushState() } }
 
     @Published private(set) var maxZoom: CGFloat = 1
     @Published private(set) var wbSupported = true
+    @Published private(set) var manualFocusSupported = true
     @Published private(set) var clientConnected = false
     /// true cuando el que está conectado es el plugin (los ajustes también se controlan desde OBS).
     @Published private(set) var controlledByPC = false
@@ -41,6 +47,9 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
         _lens = Published(initialValue: Lens(rawValue: d.string(forKey: "lens") ?? "") ?? .wide)
         _wbAuto = Published(initialValue: d.object(forKey: "wbAuto") as? Bool ?? true)
         _temperature = Published(initialValue: d.object(forKey: "temperature") as? Float ?? 5000)
+        _afAuto = Published(initialValue: d.object(forKey: "afAuto") as? Bool ?? true)
+        _focusPosition = Published(initialValue: d.object(forKey: "focusPosition") as? Float ?? 0.5)
+        _exposureBias = Published(initialValue: d.object(forKey: "exposureBias") as? Float ?? 0)
         super.init()
 
         encoder.onFrame = { [weak self] bytes, pts, isKey in
@@ -91,7 +100,16 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
         }
         if let v = s["wbAuto"] as? Bool, v != wbAuto { wbAuto = v }
         if let v = s["temp"] as? Int, Float(v) != temperature { temperature = Float(v) }
-        if let v = s["lock"] as? Bool, v != aeafLocked { aeafLocked = v }
+        if let v = s["afAuto"] as? Bool, v != afAuto { afAuto = v }
+        if let v = s["focus100"] as? Int {
+            let f = min(max(Float(v) / 100, 0), 1)
+            if abs(f - focusPosition) > 0.005 { focusPosition = f }
+        }
+        if let v = s["ev10"] as? Int {
+            let e = min(max(Float(v) / 10, -3), 3)
+            if abs(e - exposureBias) > 0.01 { exposureBias = e }
+        }
+        if let v = s["aeLock"] as? Bool, v != aeLocked { aeLocked = v }
     }
 
     /// Avisa a OBS de un cambio hecho en el teléfono, para que quede guardado en la escena.
@@ -103,7 +121,10 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
             "zoom100": Int((zoom * 100).rounded()),
             "wbAuto": wbAuto,
             "temp": Int(temperature),
-            "lock": aeafLocked,
+            "afAuto": afAuto,
+            "focus100": Int((focusPosition * 100).rounded()),
+            "ev10": Int((exposureBias * 10).rounded()),
+            "aeLock": aeLocked,
         ]
         server.queue.async { self.server.sendState(state) }
     }
@@ -136,6 +157,9 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
         d.set(lens.rawValue, forKey: "lens")
         d.set(wbAuto, forKey: "wbAuto")
         d.set(temperature, forKey: "temperature")
+        d.set(afAuto, forKey: "afAuto")
+        d.set(focusPosition, forKey: "focusPosition")
+        d.set(exposureBias, forKey: "exposureBias")
     }
 
     // MARK: - Configuración de la cámara
@@ -211,16 +235,20 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
         let dims = CMVideoFormatDescriptionGetDimensions(dev.activeFormat.formatDescription)
         let maxZ = min(dev.activeFormat.videoMaxZoomFactor, 8)
         let wbOK = dev.isLockingWhiteBalanceWithCustomDeviceGainsSupported
+        let focusOK = dev.isLockingFocusWithCustomLensPositionSupported
         DispatchQueue.main.async {
-            // Se conservan zoom, balance y bloqueo: la cámara nueva arranca en automático
-            // y hay que volver a aplicarlos.
+            // Se conservan zoom, balance, enfoque y exposición: la cámara nueva arranca
+            // en automático y hay que volver a aplicarlos.
             self.maxZoom = maxZ
             self.wbSupported = wbOK
+            self.manualFocusSupported = focusOK
             if self.zoom > maxZ { self.zoom = maxZ } else { self.applyZoom() }
             self.applyWhiteBalance()
-            if self.aeafLocked {
-                // Dejar que enfoque y exposición se asienten antes de bloquearlos.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.applyLock() }
+            self.applyFocus()
+            self.applyExposure()
+            if self.aeLocked {
+                // Dejar que la exposición se asiente antes de bloquearla.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.applyExposure() }
             }
             self.status = "\(dims.width)×\(dims.height) @ \(fps) fps\(note)"
             self.configVersion += 1
@@ -287,13 +315,25 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
         }
     }
 
-    private func applyLock() {
-        let locked = aeafLocked
+    private func applyFocus() {
+        let auto = afAuto, position = focusPosition
         withDevice { d in
-            let focus: AVCaptureDevice.FocusMode = locked ? .locked : .continuousAutoFocus
-            if d.isFocusModeSupported(focus) { d.focusMode = focus }
-            let exposure: AVCaptureDevice.ExposureMode = locked ? .locked : .continuousAutoExposure
-            if d.isExposureModeSupported(exposure) { d.exposureMode = exposure }
+            if !auto && d.isLockingFocusWithCustomLensPositionSupported {
+                d.setFocusModeLocked(lensPosition: position, completionHandler: nil)
+            } else if d.isFocusModeSupported(.continuousAutoFocus) {
+                d.focusMode = .continuousAutoFocus
+            }
+        }
+    }
+
+    private func applyExposure() {
+        let locked = aeLocked, bias = exposureBias
+        withDevice { d in
+            let mode: AVCaptureDevice.ExposureMode = locked ? .locked : .continuousAutoExposure
+            if d.isExposureModeSupported(mode) { d.exposureMode = mode }
+            // La compensación funciona tanto en automático como con la exposición bloqueada.
+            d.setExposureTargetBias(min(max(bias, d.minExposureTargetBias), d.maxExposureTargetBias),
+                                    completionHandler: nil)
         }
     }
 

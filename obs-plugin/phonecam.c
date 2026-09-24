@@ -22,6 +22,7 @@
 #include <libavcodec/avcodec.h>
 #include <libavutil/hwcontext.h>
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -138,12 +139,17 @@ static void send_ctl_locked(struct phonecam *pc)
 
 static void build_ctl(obs_data_t *settings, char *out, size_t size)
 {
-	/* El zoom viaja en centésimas para no depender del separador decimal del sistema. */
-	int zoom100 = (int)(obs_data_get_double(settings, "zoom") * 100.0 + 0.5);
-	snprintf(out, size, "{\"mode\":\"%s\",\"lens\":\"%s\",\"zoom100\":%d,\"wbAuto\":%s,\"temp\":%d,\"lock\":%s}\n",
+	/* Los decimales viajan como enteros (centésimas/décimas) para no depender
+	 * del separador decimal del sistema. */
+	int zoom100 = (int)floor(obs_data_get_double(settings, "zoom") * 100.0 + 0.5);
+	int ev10 = (int)floor(obs_data_get_double(settings, "ev") * 10.0 + 0.5);
+	snprintf(out, size,
+		 "{\"mode\":\"%s\",\"lens\":\"%s\",\"zoom100\":%d,\"wbAuto\":%s,\"temp\":%d,"
+		 "\"afAuto\":%s,\"focus100\":%d,\"ev10\":%d,\"aeLock\":%s}\n",
 		 obs_data_get_string(settings, "mode"), obs_data_get_string(settings, "lens"), zoom100,
 		 obs_data_get_bool(settings, "wb_auto") ? "true" : "false", (int)obs_data_get_int(settings, "temp"),
-		 obs_data_get_bool(settings, "lock") ? "true" : "false");
+		 obs_data_get_bool(settings, "af_auto") ? "true" : "false", (int)obs_data_get_int(settings, "focus"),
+		 ev10, obs_data_get_bool(settings, "ae_lock") ? "true" : "false");
 }
 
 struct state_task {
@@ -169,8 +175,14 @@ static void apply_state_task(void *param)
 			obs_data_set_bool(s, "wb_auto", obs_data_get_bool(st, "wbAuto"));
 		if (obs_data_has_user_value(st, "temp"))
 			obs_data_set_int(s, "temp", obs_data_get_int(st, "temp"));
-		if (obs_data_has_user_value(st, "lock"))
-			obs_data_set_bool(s, "lock", obs_data_get_bool(st, "lock"));
+		if (obs_data_has_user_value(st, "afAuto"))
+			obs_data_set_bool(s, "af_auto", obs_data_get_bool(st, "afAuto"));
+		if (obs_data_has_user_value(st, "focus100"))
+			obs_data_set_int(s, "focus", obs_data_get_int(st, "focus100"));
+		if (obs_data_has_user_value(st, "ev10"))
+			obs_data_set_double(s, "ev", (double)obs_data_get_int(st, "ev10") / 10.0);
+		if (obs_data_has_user_value(st, "aeLock"))
+			obs_data_set_bool(s, "ae_lock", obs_data_get_bool(st, "aeLock"));
 		obs_data_release(s);
 		obs_source_release(src);
 	}
@@ -486,13 +498,23 @@ static void pc_defaults(obs_data_t *settings)
 	obs_data_set_default_double(settings, "zoom", 1.0);
 	obs_data_set_default_bool(settings, "wb_auto", true);
 	obs_data_set_default_int(settings, "temp", 5000);
-	obs_data_set_default_bool(settings, "lock", false);
+	obs_data_set_default_bool(settings, "af_auto", true);
+	obs_data_set_default_int(settings, "focus", 50);
+	obs_data_set_default_double(settings, "ev", 0.0);
+	obs_data_set_default_bool(settings, "ae_lock", false);
 }
 
 static bool wb_auto_modified(obs_properties_t *props, obs_property_t *p, obs_data_t *settings)
 {
 	UNUSED_PARAMETER(p);
 	obs_property_set_enabled(obs_properties_get(props, "temp"), !obs_data_get_bool(settings, "wb_auto"));
+	return true;
+}
+
+static bool af_auto_modified(obs_properties_t *props, obs_property_t *p, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(p);
+	obs_property_set_enabled(obs_properties_get(props, "focus"), !obs_data_get_bool(settings, "af_auto"));
 	return true;
 }
 
@@ -522,8 +544,20 @@ static obs_properties_t *pc_properties(void *unused)
 	p = obs_properties_add_int_slider(cam, "temp", "Temperatura de color", 2500, 8000, 50);
 	obs_property_int_set_suffix(p, " K");
 
-	obs_properties_add_bool(cam, "lock", "Bloquear enfoque y exposición");
 	obs_properties_add_group(props, "camera", "Cámara", OBS_GROUP_NORMAL, cam);
+
+	obs_properties_t *focus = obs_properties_create();
+	p = obs_properties_add_bool(focus, "af_auto", "Enfoque automático");
+	obs_property_set_modified_callback(p, af_auto_modified);
+	p = obs_properties_add_int_slider(focus, "focus", "Distancia (0 = cerca, 100 = lejos)", 0, 100, 1);
+	obs_property_set_long_description(p, "La cámara frontal tiene foco fijo: ahí no tiene efecto.");
+	obs_properties_add_group(props, "focus_group", "Enfoque", OBS_GROUP_NORMAL, focus);
+
+	obs_properties_t *expo = obs_properties_create();
+	p = obs_properties_add_float_slider(expo, "ev", "Compensación (EV)", -3.0, 3.0, 0.1);
+	obs_property_set_long_description(p, "Negativo = más oscuro. Si la imagen se quema, bájalo.");
+	obs_properties_add_bool(expo, "ae_lock", "Bloquear exposición");
+	obs_properties_add_group(props, "exposure_group", "Exposición", OBS_GROUP_NORMAL, expo);
 
 	obs_properties_t *conn = obs_properties_create();
 	obs_properties_add_text(conn, "host", "Dirección del iPhone", OBS_TEXT_DEFAULT);

@@ -106,7 +106,23 @@ struct ContentView: View {
                         .disabled(cam.wbAuto || !cam.wbSupported)
                 }
 
-                Toggle("Bloquear enfoque y exposición", isOn: $cam.aeafLocked)
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Enfoque automático", isOn: $cam.afAuto)
+                        .disabled(!cam.manualFocusSupported)
+                    HStack {
+                        Text("Cerca").font(.caption2)
+                        Slider(value: $cam.focusPosition, in: 0...1)
+                        Text("Lejos").font(.caption2)
+                    }
+                    .disabled(cam.afAuto || !cam.manualFocusSupported)
+                    .opacity(cam.afAuto || !cam.manualFocusSupported ? 0.4 : 1)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(String(format: "Exposición %+.1f EV", Double(cam.exposureBias)))
+                    Slider(value: $cam.exposureBias, in: -3...3, step: 0.1)
+                    Toggle("Bloquear exposición", isOn: $cam.aeLocked)
+                }
 
                 Button {
                     enterBlack()

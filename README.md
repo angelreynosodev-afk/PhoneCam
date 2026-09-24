@@ -1,7 +1,7 @@
 # PhoneCam
 
-Usa un iPhone (iOS 15+) como webcam para OBS. Tiene resolución, lente, zoom,
-temperatura de color y bloqueo de enfoque y exposición. Nada más.
+Usa un iPhone (iOS 15+) como webcam para OBS. Tiene resolución, lente, zoom, enfoque, exposición,
+y temperatura de color. Nada más.
 
 ```
 iPhone: cámara → H.264 por hardware → MPEG-TS → TCP :5000
@@ -49,7 +49,8 @@ El plugin está compilado para **OBS 31.0.0 (64 bits)**.
 El plugin solo se conecta mientras la fuente se ve en la escena. Si la ocultas, el iPhone deja de codificar.
 
 **Control desde OBS:** en las propiedades de la fuente, el grupo **Cámara** tiene resolución, lente, zoom,
-balance de blancos y bloqueo de enfoque y exposición. OBS manda: al conectar, el iPhone toma esos ajustes.
+balance de blancos; los grupos **Enfoque** (automático o manual) y **Exposición**
+(compensación EV y bloqueo) permiten corregir foco y brillo. OBS manda: al conectar, el iPhone toma esos ajustes.
 Si cambias algo desde el teléfono, también se guarda en OBS; lo verás la próxima vez que abras las propiedades.
 
 **GPU:** "Decodificar con la GPU" viene activado. Usa D3D11VA y, si no está disponible, la CPU.
