@@ -1,7 +1,7 @@
 # PhoneCam
 
 Usa un iPhone (iOS 15+) como webcam para OBS. Tiene resolución, lente, zoom, enfoque, exposición
-y temperatura de color. Nada más. Probado en la idea con un iPhone 7 Plus y un iPhone 17 Pro.
+y temperatura de color. Nada más. Pensada para funcionar tanto en un iPhone 7 Plus como en un 17 Pro.
 
 ```
 iPhone: cámara → H.264 por hardware → MPEG-TS → TCP :5000
