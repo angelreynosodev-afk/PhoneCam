@@ -1,7 +1,7 @@
 # PhoneCam
 
-Usa un iPhone (iOS 15+) como webcam para OBS. Tiene resolución, lente, zoom, enfoque, exposición,
-y temperatura de color. Nada más.
+Usa un iPhone (iOS 15+) como webcam para OBS. Tiene resolución, lente, zoom, enfoque, exposición
+y temperatura de color. Nada más. Probado en la idea con un iPhone 7 Plus y un iPhone 17 Pro.
 
 ```
 iPhone: cámara → H.264 por hardware → MPEG-TS → TCP :5000
@@ -31,6 +31,8 @@ En el PC no se instala nada: OBS recibe el video directamente.
 3. En Sideloadly, arrastra `PhoneCam.ipa`, escribe tu Apple ID y dale a **Start**.
    Puedes usar un Apple ID secundario si prefieres.
 4. En el iPhone ve a **Ajustes › General › VPN y gestión de dispositivos**, toca tu Apple ID y selecciona **Confiar**.
+5. En iOS 16 o posterior, activa además **Ajustes › Privacidad y seguridad › Modo desarrollador** y reinicia.
+   Esa opción aparece después del primer intento de instalación.
 
 > Con un Apple ID gratuito, la app **caduca a los 7 días**. Para renovarla, vuelve a pasarla
 > con Sideloadly; tiene una opción de auto-refresh. Tus ajustes no se pierden.
@@ -90,6 +92,9 @@ El iPhone **solo codifica mientras OBS está conectado**. Si nadie está mirando
 ## Consejos
 
 - **1080p · 30 fps** es el mejor equilibrio para un iPhone 7 Plus. 4K funciona, pero calienta el teléfono.
+- Los lentes se detectan solos: un 17 Pro muestra 0.5x · 1x · 4x · Frontal; un 7 Plus, 1x · 2x · Frontal.
+- **4K · 60 fps** (iPhones nuevos) pesa también en el PC: si tu transmisión sale en 1080p, 1080p · 60 fps
+  se ve igual y ahorra recursos.
 - Usa **Pantalla negra**: apaga la vista previa y baja el brillo al mínimo. Toca la pantalla para volver.
 - La app debe quedarse **abierta en primer plano**, porque iOS no permite usar la cámara en segundo plano.
   El bloqueo automático de pantalla ya viene desactivado por la app.

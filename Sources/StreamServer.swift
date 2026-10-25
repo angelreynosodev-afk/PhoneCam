@@ -27,7 +27,8 @@ final class StreamServer {
     private var waitKey = true
     /// Si la red no da abasto se descartan frames hasta el siguiente keyframe,
     /// en lugar de acumular retraso.
-    private let maxPending = 500_000
+    /// Se ajusta según el bitrate (lo fija CameraController).
+    var maxPending = 500_000
 
     init(port: UInt16) {
         self.port = port

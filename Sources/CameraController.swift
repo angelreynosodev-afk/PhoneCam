@@ -28,6 +28,9 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
     @Published private(set) var address = "…"
     @Published private(set) var configVersion = 0
 
+    /// Lentes de este iPhone, para el selector.
+    let lenses = Lens.available()
+
     let session = AVCaptureSession()
     private let sessionQueue = DispatchQueue(label: "cam.session")
     private let videoQueue = DispatchQueue(label: "cam.video", qos: .userInteractive)
@@ -178,7 +181,15 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
             input = nil
             device = nil
         }
-        guard let dev = AVCaptureDevice.default(lens.deviceType, for: .video, position: lens.position),
+        // Si este iPhone no tiene el lente pedido (p. ej. ultra gran angular en un 7 Plus,
+        // o un ajuste guardado en OBS desde otro teléfono), se usa el normal.
+        var note = ""
+        var chosen = lens.device
+        if chosen == nil {
+            chosen = Lens.wide.device
+            note = " (este iPhone no tiene ese lente)"
+        }
+        guard let dev = chosen,
               let inp = try? AVCaptureDeviceInput(device: dev),
               session.canAddInput(inp) else {
             session.commitConfiguration()
@@ -198,10 +209,9 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
         }
 
         var fps = mode.fps
-        var note = ""
         let picked = pickFormat(dev, mode)
         if picked == nil {
-            note = " (resolución no soportada por este lente)"
+            note += " (resolución no soportada por este lente)"
             if session.canSetSessionPreset(.hd1920x1080) { session.sessionPreset = .hd1920x1080 }
         }
 
@@ -230,6 +240,8 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
 
         let bitrate = mode.bitrate
         videoQueue.sync { encoder.configure(fps: fps, bitrate: bitrate) }
+        // Margen de red: ~0,25 s de video. Con menos, un keyframe 4K ya lo llenaría.
+        server.queue.async { self.server.maxPending = max(500_000, bitrate / 32) }
         if !session.isRunning { session.startRunning() }
 
         let dims = CMVideoFormatDescriptionGetDimensions(dev.activeFormat.formatDescription)

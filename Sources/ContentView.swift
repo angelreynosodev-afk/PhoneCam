@@ -79,7 +79,7 @@ struct ContentView: View {
                 Divider()
 
                 Picker("Lente", selection: $cam.lens) {
-                    ForEach(Lens.allCases) { Text($0.label).tag($0) }
+                    ForEach(cam.lenses) { Text($0.label).tag($0.lens) }
                 }
                 .pickerStyle(.segmented)
 

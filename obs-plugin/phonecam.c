@@ -531,11 +531,16 @@ static obs_properties_t *pc_properties(void *unused)
 	obs_property_list_add_string(p, "1080p · 30 fps", "p1080_30");
 	obs_property_list_add_string(p, "1080p · 60 fps", "p1080_60");
 	obs_property_list_add_string(p, "4K · 30 fps", "p2160_30");
+	obs_property_list_add_string(p, "4K · 60 fps", "p2160_60");
+	obs_property_set_long_description(
+		p, "Si el iPhone no soporta la resolución o los fps elegidos, usa lo más cercano que tenga.");
 
 	p = obs_properties_add_list(cam, "lens", "Lente", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	obs_property_list_add_string(p, "Normal", "wide");
-	obs_property_list_add_string(p, "Tele 2x", "tele");
+	obs_property_list_add_string(p, "Ultra gran angular (0.5x)", "ultra");
+	obs_property_list_add_string(p, "Normal (1x)", "wide");
+	obs_property_list_add_string(p, "Teleobjetivo", "tele");
 	obs_property_list_add_string(p, "Frontal", "front");
+	obs_property_set_long_description(p, "Si el iPhone no tiene ese lente, usa el normal.");
 
 	obs_properties_add_float_slider(cam, "zoom", "Zoom", 1.0, 8.0, 0.1);
 
