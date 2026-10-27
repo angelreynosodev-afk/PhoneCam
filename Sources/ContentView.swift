@@ -1,12 +1,42 @@
 import AVFoundation
 import SwiftUI
 
+/// Interfaz al estilo de la app Cámara: todo abajo y compacto, para que se vea lo que se filma.
+/// Una fila de lentes, una barra de íconos y, encima, solo el control que se esté ajustando.
+/// Tocar la imagen oculta o muestra los controles.
 struct ContentView: View {
     @StateObject private var cam = CameraController()
     @Environment(\.scenePhase) private var phase
     @State private var showControls = true
+    @State private var tab: Tab?
     @State private var black = false
     @State private var savedBrightness: CGFloat = 0.5
+
+    enum Tab: String, CaseIterable, Identifiable {
+        case zoom, focus, exposure, color, video
+
+        var id: String { rawValue }
+
+        var icon: String {
+            switch self {
+            case .zoom: return "plus.magnifyingglass"
+            case .focus: return "scope"
+            case .exposure: return "sun.max"
+            case .color: return "thermometer"
+            case .video: return "film"
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .zoom: return "Zoom"
+            case .focus: return "Foco"
+            case .exposure: return "Luz"
+            case .color: return "Color"
+            case .video: return "Video"
+            }
+        }
+    }
 
     var body: some View {
         ZStack {
@@ -16,6 +46,7 @@ struct ContentView: View {
                         mirrored: cam.mirrored, version: cam.configVersion)
                 .ignoresSafeArea()
                 .opacity(black ? 0 : 1)
+                .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { showControls.toggle() } }
 
             if black {
                 // Pantalla negra: sin vista previa y brillo al mínimo. Tocar para salir.
@@ -28,20 +59,17 @@ struct ContentView: View {
                             .foregroundColor(Color.white.opacity(0.25))
                             .padding(),
                         alignment: .bottomLeading)
-            } else {
-                HStack(alignment: .top) {
-                    Spacer()
-                    if showControls { panel }
-                    Button {
-                        withAnimation { showControls.toggle() }
-                    } label: {
-                        Image(systemName: showControls ? "chevron.right.circle.fill" : "slider.horizontal.3")
-                            .font(.title2)
-                            .padding(10)
-                            .background(.ultraThinMaterial, in: Circle())
+            } else if showControls {
+                VStack(spacing: 0) {
+                    HStack {
+                        statusPill
+                        Spacer()
                     }
+                    Spacer()
+                    bottomPanel
                 }
-                .padding()
+                .padding(10)
+                .transition(.opacity)
             }
         }
         .preferredColorScheme(.dark)
@@ -55,48 +83,125 @@ struct ContentView: View {
         }
     }
 
-    private var panel: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+    // MARK: - Arriba: estado
+
+    private var statusPill: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(cam.clientConnected ? Color.green : Color.gray)
+                .frame(width: 8, height: 8)
+            if cam.clientConnected {
+                Text(cam.controlledByPC ? "OBS · control desde PC" : "OBS conectado")
+            } else {
+                Text("Esperando OBS · \(cam.address):\(String(CameraController.port))")
+            }
+        }
+        .font(.caption)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.ultraThinMaterial, in: Capsule())
+    }
+
+    // MARK: - Abajo: lentes, barra de íconos y el control abierto
+
+    private var bottomPanel: some View {
+        VStack(spacing: 10) {
+            if let tab = tab {
+                tabContent(tab)
+                    .font(.footnote)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            lensRow
+            toolBar
+        }
+        .padding(12)
+        .frame(maxWidth: 520)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .frame(maxWidth: .infinity)
+    }
+
+    private var lensRow: some View {
+        HStack(spacing: 8) {
+            ForEach(cam.lenses) { option in
+                let selected = cam.isSelected(option)
+                Button(option.label) { cam.select(option) }
+                    .font(.footnote.weight(.semibold))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(selected ? Color.yellow : Color.white.opacity(0.15), in: Capsule())
+                    .foregroundColor(selected ? .black : .white)
+            }
+        }
+    }
+
+    private var toolBar: some View {
+        HStack(spacing: 2) {
+            ForEach(Tab.allCases) { t in
+                toolButton(t.icon, t.title, active: tab == t) {
+                    withAnimation(.easeOut(duration: 0.15)) { tab = (tab == t) ? nil : t }
+                }
+            }
+            Divider().frame(height: 30)
+            toolButton("rectangle.portrait", "Vertical", active: cam.portrait) { cam.portrait.toggle() }
+            toolButton("arrow.left.and.right", "Espejo", active: cam.mirrored) { cam.mirrored.toggle() }
+            toolButton("moon.fill", "Negra", active: false) { enterBlack() }
+        }
+    }
+
+    private func toolButton(_ icon: String, _ title: String, active: Bool,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: icon).font(.system(size: 17))
+                Text(title).font(.system(size: 9))
+            }
+            .frame(maxWidth: .infinity, minHeight: 40)
+            .foregroundColor(active ? .yellow : .white)
+        }
+    }
+
+    @ViewBuilder
+    private func tabContent(_ t: Tab) -> some View {
+        switch t {
+        case .zoom:
+            valueRow(String(format: "%.1fx", Double(cam.zoom))) {
+                Slider(value: $cam.zoom, in: 1...max(cam.maxZoom, 1.01))
+                    .disabled(cam.maxZoom <= 1)
+            }
+
+        case .focus:
+            VStack(spacing: 6) {
+                Toggle("Enfoque automático", isOn: $cam.afAuto)
+                    .disabled(!cam.manualFocusSupported)
                 HStack {
-                    Circle()
-                        .fill(cam.clientConnected ? Color.green : Color.gray)
-                        .frame(width: 10, height: 10)
-                    Text(cam.clientConnected ? "OBS conectado" : "Esperando OBS…")
-                        .font(.headline)
+                    Text("Cerca").font(.caption2)
+                    Slider(value: $cam.focusPosition, in: 0...1)
+                    Text("Lejos").font(.caption2)
                 }
-                if cam.controlledByPC {
-                    Label("Controlable desde OBS", systemImage: "desktopcomputer")
-                        .font(.caption)
-                        .foregroundColor(.green)
+                .disabled(cam.afAuto || !cam.manualFocusSupported)
+                .opacity(cam.afAuto || !cam.manualFocusSupported ? 0.4 : 1)
+            }
+
+        case .exposure:
+            VStack(spacing: 6) {
+                valueRow(String(format: "%+.1f EV", Double(cam.exposureBias))) {
+                    Slider(value: $cam.exposureBias, in: -3...3, step: 0.1)
                 }
-                Text("tcp://\(cam.address):\(String(CameraController.port))")
-                    .font(.system(.footnote, design: .monospaced))
-                    .textSelection(.enabled)
-                Text(cam.status)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                Toggle("Bloquear exposición", isOn: $cam.aeLocked)
+            }
 
-                Divider()
-
-                HStack {
-                    Toggle(isOn: $cam.portrait) {
-                        Label("Vertical", systemImage: "rectangle.portrait")
-                            .frame(maxWidth: .infinity)
-                    }
-                    Toggle(isOn: $cam.mirrored) {
-                        Label("Espejo", systemImage: "arrow.left.and.right")
-                            .frame(maxWidth: .infinity)
-                    }
+        case .color:
+            VStack(spacing: 6) {
+                Toggle("Balance de blancos automático", isOn: $cam.wbAuto)
+                valueRow("\(Int(cam.temperature)) K") {
+                    Slider(value: $cam.temperature, in: 2500...8000, step: 50)
                 }
-                .toggleStyle(.button)
-                .buttonStyle(.bordered)
+                .disabled(cam.wbAuto || !cam.wbSupported)
+                .opacity(cam.wbAuto || !cam.wbSupported ? 0.4 : 1)
+            }
 
-                Picker("Lente", selection: $cam.lens) {
-                    ForEach(cam.lenses) { Text($0.label).tag($0.lens) }
-                }
-                .pickerStyle(.segmented)
-
+        case .video:
+            VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text("Resolución")
                     Spacer()
@@ -105,52 +210,27 @@ struct ContentView: View {
                     }
                     .pickerStyle(.menu)
                 }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(String(format: "Zoom %.1fx", Double(cam.zoom)))
-                    Slider(value: $cam.zoom, in: 1...max(cam.maxZoom, 1.01))
-                        .disabled(cam.maxZoom <= 1)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Toggle("Balance de blancos auto", isOn: $cam.wbAuto)
-                    Text("\(Int(cam.temperature)) K")
-                        .foregroundColor(cam.wbAuto ? .secondary : .primary)
-                    Slider(value: $cam.temperature, in: 2500...8000, step: 50)
-                        .disabled(cam.wbAuto || !cam.wbSupported)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Toggle("Enfoque automático", isOn: $cam.afAuto)
-                        .disabled(!cam.manualFocusSupported)
-                    HStack {
-                        Text("Cerca").font(.caption2)
-                        Slider(value: $cam.focusPosition, in: 0...1)
-                        Text("Lejos").font(.caption2)
-                    }
-                    .disabled(cam.afAuto || !cam.manualFocusSupported)
-                    .opacity(cam.afAuto || !cam.manualFocusSupported ? 0.4 : 1)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(String(format: "Exposición %+.1f EV", Double(cam.exposureBias)))
-                    Slider(value: $cam.exposureBias, in: -3...3, step: 0.1)
-                    Toggle("Bloquear exposición", isOn: $cam.aeLocked)
-                }
-
-                Button {
-                    enterBlack()
-                } label: {
-                    Label("Pantalla negra (ahorro)", systemImage: "moon.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
+                Text("tcp://\(cam.address):\(String(CameraController.port))")
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                Text(cam.status)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
-            .padding()
         }
-        .frame(width: 290)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
+
+    /// Valor a la izquierda (ancho fijo, para que el deslizador no salte) y control a la derecha.
+    private func valueRow<Content: View>(_ value: String, @ViewBuilder _ content: () -> Content) -> some View {
+        HStack(spacing: 10) {
+            Text(value)
+                .font(.system(.footnote, design: .monospaced))
+                .frame(width: 70, alignment: .leading)
+            content()
+        }
+    }
+
+    // MARK: - Pantalla negra
 
     private func enterBlack() {
         savedBrightness = UIScreen.main.brightness

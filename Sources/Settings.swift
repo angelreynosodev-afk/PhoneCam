@@ -77,22 +77,45 @@ enum Lens: String, CaseIterable, Identifiable {
     /// Lentes que tiene este iPhone, con su etiqueta ("0.5x", "1x", "4x", "Frontal").
     /// El aumento se calcula comparando el campo de visión con el del lente normal,
     /// así sirve igual para un 7 Plus (tele 2x) que para un 17 Pro (tele 4x).
+    /// Aumento de este lente respecto del normal (p. ej. 0.5 el ultra, 4 el tele de un 17 Pro).
+    var factor: Double? {
+        guard let dev = device, let wide = Lens.wide.device else { return nil }
+        if self == .wide { return 1 }
+        let w = Double(wide.activeFormat.videoFieldOfView), f = Double(dev.activeFormat.videoFieldOfView)
+        guard w > 0, f > 0 else { return nil }
+        return tan(w * .pi / 360) / tan(f * .pi / 360)
+    }
+
+    /// Botones de lente para este iPhone: "0.5x", "1x", "2x", "4x", "Frontal".
+    /// Si el tele es de 3x o más (iPhones nuevos), se agrega un 2x que recorta el sensor
+    /// principal, igual que la app Cámara. En un 7 Plus el tele ya es 2x y no hace falta.
     static func available() -> [LensOption] {
-        let wideFov = Lens.wide.device?.activeFormat.videoFieldOfView ?? 0
-        return allCases.compactMap { lens in
-            guard let dev = lens.device else { return nil }
-            if lens == .front { return LensOption(lens: lens, label: "Frontal") }
-            if lens == .wide || wideFov <= 0 { return LensOption(lens: lens, label: "1x") }
-            let fov = dev.activeFormat.videoFieldOfView
-            let factor = tan(Double(wideFov) * .pi / 360) / tan(Double(fov) * .pi / 360)
-            let text = factor < 1 ? String(format: "%.1fx", factor) : "\(Int(factor.rounded()))x"
-            return LensOption(lens: lens, label: text)
+        var options: [LensOption] = []
+        for lens in allCases {
+            guard lens.device != nil else { continue }
+            switch lens {
+            case .front:
+                options.append(LensOption(lens: lens, zoom: 1, label: "Frontal"))
+            case .wide:
+                options.append(LensOption(lens: lens, zoom: 1, label: "1x"))
+                let tele = Lens.tele.factor ?? 0
+                if tele < 1.5 || tele >= 3 {
+                    options.append(LensOption(lens: .wide, zoom: 2, label: "2x"))
+                }
+            case .ultra, .tele:
+                guard let f = lens.factor else { continue }
+                let text = f < 1 ? String(format: "%.1fx", f) : "\(Int(f.rounded()))x"
+                options.append(LensOption(lens: lens, zoom: 1, label: text))
+            }
         }
+        return options
     }
 }
 
+/// Un botón del selector de lentes: un lente físico más un zoom inicial.
 struct LensOption: Identifiable {
     let lens: Lens
+    let zoom: CGFloat
     let label: String
-    var id: Lens { lens }
+    var id: String { "\(lens.rawValue)-\(zoom)" }
 }

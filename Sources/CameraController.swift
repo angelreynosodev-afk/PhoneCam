@@ -96,6 +96,18 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
         }
     }
 
+    // MARK: - Selector de lentes
+
+    /// Cambia de lente y aplica su zoom inicial (p. ej. "2x" = lente normal con zoom 2).
+    func select(_ option: LensOption) {
+        if lens != option.lens { lens = option.lens }
+        zoom = option.zoom
+    }
+
+    func isSelected(_ option: LensOption) -> Bool {
+        lens == option.lens && abs(zoom - option.zoom) < 0.05
+    }
+
     // MARK: - Control desde OBS
 
     private func applyRemote(_ s: [String: Any]) {
