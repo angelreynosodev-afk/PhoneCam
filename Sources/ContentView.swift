@@ -12,7 +12,8 @@ struct ContentView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            PreviewView(session: cam.session, enabled: !black, version: cam.configVersion)
+            PreviewView(session: cam.session, enabled: !black, portrait: cam.portrait,
+                        mirrored: cam.mirrored, version: cam.configVersion)
                 .ignoresSafeArea()
                 .opacity(black ? 0 : 1)
 
@@ -77,6 +78,19 @@ struct ContentView: View {
                     .foregroundColor(.secondary)
 
                 Divider()
+
+                HStack {
+                    Toggle(isOn: $cam.portrait) {
+                        Label("Vertical", systemImage: "rectangle.portrait")
+                            .frame(maxWidth: .infinity)
+                    }
+                    Toggle(isOn: $cam.mirrored) {
+                        Label("Espejo", systemImage: "arrow.left.and.right")
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .toggleStyle(.button)
+                .buttonStyle(.bordered)
 
                 Picker("Lente", selection: $cam.lens) {
                     ForEach(cam.lenses) { Text($0.label).tag($0.lens) }
@@ -153,6 +167,8 @@ struct ContentView: View {
 struct PreviewView: UIViewRepresentable {
     let session: AVCaptureSession
     let enabled: Bool
+    let portrait: Bool
+    let mirrored: Bool
     let version: Int // fuerza updateUIView tras reconfigurar la cámara
 
     final class View: UIView {
@@ -169,7 +185,12 @@ struct PreviewView: UIViewRepresentable {
 
     func updateUIView(_ v: View, context: Context) {
         guard let c = v.previewLayer.connection else { return }
-        if c.isVideoOrientationSupported { c.videoOrientation = .landscapeRight }
+        // La vista previa muestra exactamente lo que se envía a OBS.
+        if c.isVideoOrientationSupported { c.videoOrientation = portrait ? .portrait : .landscapeRight }
+        if c.isVideoMirroringSupported {
+            c.automaticallyAdjustsVideoMirroring = false
+            c.isVideoMirrored = mirrored
+        }
         c.isEnabled = enabled
     }
 }

@@ -145,11 +145,13 @@ static void build_ctl(obs_data_t *settings, char *out, size_t size)
 	int ev10 = (int)floor(obs_data_get_double(settings, "ev") * 10.0 + 0.5);
 	snprintf(out, size,
 		 "{\"mode\":\"%s\",\"lens\":\"%s\",\"zoom100\":%d,\"wbAuto\":%s,\"temp\":%d,"
-		 "\"afAuto\":%s,\"focus100\":%d,\"ev10\":%d,\"aeLock\":%s}\n",
+		 "\"afAuto\":%s,\"focus100\":%d,\"ev10\":%d,\"aeLock\":%s,\"portrait\":%s,\"mirror\":%s}\n",
 		 obs_data_get_string(settings, "mode"), obs_data_get_string(settings, "lens"), zoom100,
 		 obs_data_get_bool(settings, "wb_auto") ? "true" : "false", (int)obs_data_get_int(settings, "temp"),
 		 obs_data_get_bool(settings, "af_auto") ? "true" : "false", (int)obs_data_get_int(settings, "focus"),
-		 ev10, obs_data_get_bool(settings, "ae_lock") ? "true" : "false");
+		 ev10, obs_data_get_bool(settings, "ae_lock") ? "true" : "false",
+		 obs_data_get_bool(settings, "portrait") ? "true" : "false",
+		 obs_data_get_bool(settings, "mirror") ? "true" : "false");
 }
 
 struct state_task {
@@ -183,6 +185,10 @@ static void apply_state_task(void *param)
 			obs_data_set_double(s, "ev", (double)obs_data_get_int(st, "ev10") / 10.0);
 		if (obs_data_has_user_value(st, "aeLock"))
 			obs_data_set_bool(s, "ae_lock", obs_data_get_bool(st, "aeLock"));
+		if (obs_data_has_user_value(st, "portrait"))
+			obs_data_set_bool(s, "portrait", obs_data_get_bool(st, "portrait"));
+		if (obs_data_has_user_value(st, "mirror"))
+			obs_data_set_bool(s, "mirror", obs_data_get_bool(st, "mirror"));
 		obs_data_release(s);
 		obs_source_release(src);
 	}
@@ -502,6 +508,8 @@ static void pc_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "focus", 50);
 	obs_data_set_default_double(settings, "ev", 0.0);
 	obs_data_set_default_bool(settings, "ae_lock", false);
+	obs_data_set_default_bool(settings, "portrait", false);
+	obs_data_set_default_bool(settings, "mirror", false);
 }
 
 static bool wb_auto_modified(obs_properties_t *props, obs_property_t *p, obs_data_t *settings)
@@ -543,6 +551,8 @@ static obs_properties_t *pc_properties(void *unused)
 	obs_property_set_long_description(p, "Si el iPhone no tiene ese lente, usa el normal.");
 
 	obs_properties_add_float_slider(cam, "zoom", "Zoom", 1.0, 8.0, 0.1);
+	obs_properties_add_bool(cam, "portrait", "Vertical (9:16)");
+	obs_properties_add_bool(cam, "mirror", "Modo espejo");
 
 	p = obs_properties_add_bool(cam, "wb_auto", "Balance de blancos automático");
 	obs_property_set_modified_callback(p, wb_auto_modified);

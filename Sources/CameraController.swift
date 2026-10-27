@@ -17,6 +17,11 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
     /// Compensación de exposición en EV (negativo = más oscuro).
     @Published var exposureBias: Float { didSet { save(); applyExposure(); pushState() } }
     @Published var aeLocked = false { didSet { applyExposure(); pushState() } }
+    /// Salida vertical (9:16). La interfaz gira junto con la salida.
+    @Published var portrait: Bool {
+        didSet { save(); AppDelegate.setInterfaceOrientation(portrait: portrait); applyOrientation(); pushState() }
+    }
+    @Published var mirrored: Bool { didSet { save(); applyOrientation(); pushState() } }
 
     @Published private(set) var maxZoom: CGFloat = 1
     @Published private(set) var wbSupported = true
@@ -53,6 +58,8 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
         _afAuto = Published(initialValue: d.object(forKey: "afAuto") as? Bool ?? true)
         _focusPosition = Published(initialValue: d.object(forKey: "focusPosition") as? Float ?? 0.5)
         _exposureBias = Published(initialValue: d.object(forKey: "exposureBias") as? Float ?? 0)
+        _portrait = Published(initialValue: d.bool(forKey: "portrait"))
+        _mirrored = Published(initialValue: d.bool(forKey: "mirrored"))
         super.init()
 
         encoder.onFrame = { [weak self] bytes, pts, isKey in
@@ -113,6 +120,8 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
             if abs(e - exposureBias) > 0.01 { exposureBias = e }
         }
         if let v = s["aeLock"] as? Bool, v != aeLocked { aeLocked = v }
+        if let v = s["portrait"] as? Bool, v != portrait { portrait = v }
+        if let v = s["mirror"] as? Bool, v != mirrored { mirrored = v }
     }
 
     /// Avisa a OBS de un cambio hecho en el teléfono, para que quede guardado en la escena.
@@ -128,6 +137,8 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
             "focus100": Int((focusPosition * 100).rounded()),
             "ev10": Int((exposureBias * 10).rounded()),
             "aeLock": aeLocked,
+            "portrait": portrait,
+            "mirror": mirrored,
         ]
         server.queue.async { self.server.sendState(state) }
     }
@@ -163,16 +174,37 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
         d.set(afAuto, forKey: "afAuto")
         d.set(focusPosition, forKey: "focusPosition")
         d.set(exposureBias, forKey: "exposureBias")
+        d.set(portrait, forKey: "portrait")
+        d.set(mirrored, forKey: "mirrored")
     }
 
     // MARK: - Configuración de la cámara
 
     private func reconfigure() {
-        let mode = self.mode, lens = self.lens
-        sessionQueue.async { self.configure(mode: mode, lens: lens) }
+        let mode = self.mode, lens = self.lens, portrait = self.portrait, mirrored = self.mirrored
+        sessionQueue.async { self.configure(mode: mode, lens: lens, portrait: portrait, mirrored: mirrored) }
     }
 
-    private func configure(mode: VideoMode, lens: Lens) {
+    /// Orientación y espejo de la salida. La rotación la hace el pipeline de captura,
+    /// sin copias extra; el encoder se recrea solo al cambiar las dimensiones del frame.
+    private func setOutputOrientation(portrait: Bool, mirrored: Bool) {
+        guard let c = output.connection(with: .video) else { return }
+        if c.isVideoOrientationSupported { c.videoOrientation = portrait ? .portrait : .landscapeRight }
+        if c.isVideoMirroringSupported {
+            c.automaticallyAdjustsVideoMirroring = false
+            c.isVideoMirrored = mirrored
+        }
+    }
+
+    private func applyOrientation() {
+        let portrait = self.portrait, mirrored = self.mirrored
+        sessionQueue.async {
+            self.setOutputOrientation(portrait: portrait, mirrored: mirrored)
+            DispatchQueue.main.async { self.configVersion += 1 } // actualiza la vista previa
+        }
+    }
+
+    private func configure(mode: VideoMode, lens: Lens, portrait: Bool, mirrored: Bool) {
         session.beginConfiguration()
         session.sessionPreset = .inputPriority
 
@@ -228,14 +260,10 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
             dev.unlockForConfiguration()
         }
 
-        if let c = output.connection(with: .video) {
-            if c.isVideoOrientationSupported { c.videoOrientation = .landscapeRight }
-            if c.isVideoStabilizationSupported { c.preferredVideoStabilizationMode = .off } // la estabilización agrega latencia
-            if c.isVideoMirroringSupported {
-                c.automaticallyAdjustsVideoMirroring = false
-                c.isVideoMirrored = false
-            }
+        if let c = output.connection(with: .video), c.isVideoStabilizationSupported {
+            c.preferredVideoStabilizationMode = .off // la estabilización agrega latencia
         }
+        setOutputOrientation(portrait: portrait, mirrored: mirrored)
         session.commitConfiguration()
 
         let bitrate = mode.bitrate
