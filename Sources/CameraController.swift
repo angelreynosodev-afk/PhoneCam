@@ -17,6 +17,22 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
     /// Compensación de exposición en EV (negativo = más oscuro).
     @Published var exposureBias: Float { didSet { save(); applyExposure(); pushState() } }
     @Published var aeLocked = false { didSet { applyExposure(); pushState() } }
+    /// Exposición manual: obturador e ISO fijos (en lugar de EV + bloqueo).
+    @Published var exposureManual: Bool {
+        didSet {
+            save()
+            // Al pasar a manual desde el teléfono, arrancar con lo que estaba usando el automático.
+            if exposureManual && !applyingRemote { seedManualFromAuto() } else { applyExposure() }
+            pushState()
+        }
+    }
+    /// Denominador del obturador: 100 = 1/100 s.
+    @Published var shutter: Int { didSet { save(); applyExposure(); pushState() } }
+    @Published var iso: Float { didSet { save(); applyExposure(); pushState() } }
+    @Published private(set) var manualExposureSupported = true
+    @Published private(set) var isoRange: ClosedRange<Float> = 25...1600
+    @Published private(set) var shutterOptions: [Int] = [30, 50, 60, 100, 120, 250, 500, 1000]
+    static let allShutters = [25, 30, 50, 60, 100, 120, 250, 500, 1000, 2000]
     /// Salida vertical (9:16). La interfaz gira junto con la salida.
     @Published var portrait: Bool {
         didSet { save(); AppDelegate.setInterfaceOrientation(portrait: portrait); applyOrientation(); pushState() }
@@ -58,6 +74,9 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
         _afAuto = Published(initialValue: d.object(forKey: "afAuto") as? Bool ?? true)
         _focusPosition = Published(initialValue: d.object(forKey: "focusPosition") as? Float ?? 0.5)
         _exposureBias = Published(initialValue: d.object(forKey: "exposureBias") as? Float ?? 0)
+        _exposureManual = Published(initialValue: d.bool(forKey: "exposureManual"))
+        _shutter = Published(initialValue: d.object(forKey: "shutter") as? Int ?? 60)
+        _iso = Published(initialValue: d.object(forKey: "iso") as? Float ?? 200)
         _portrait = Published(initialValue: d.bool(forKey: "portrait"))
         _mirrored = Published(initialValue: d.bool(forKey: "mirrored"))
         super.init()
@@ -132,6 +151,13 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
             if abs(e - exposureBias) > 0.01 { exposureBias = e }
         }
         if let v = s["aeLock"] as? Bool, v != aeLocked { aeLocked = v }
+        // Obturador e ISO antes que el modo, para que el manual arranque con los valores de OBS.
+        if let v = s["shutter"] as? Int, v > 0 {
+            let valid = shutterOptions.first { $0 >= v } ?? shutterOptions.last ?? v
+            if valid != shutter { shutter = valid }
+        }
+        if let v = s["iso"] as? Int, Float(v) != iso { iso = Float(v) }
+        if let v = s["expManual"] as? Bool, v != exposureManual { exposureManual = v }
         if let v = s["portrait"] as? Bool, v != portrait { portrait = v }
         if let v = s["mirror"] as? Bool, v != mirrored { mirrored = v }
     }
@@ -149,6 +175,9 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
             "focus100": Int((focusPosition * 100).rounded()),
             "ev10": Int((exposureBias * 10).rounded()),
             "aeLock": aeLocked,
+            "expManual": exposureManual,
+            "shutter": shutter,
+            "iso": Int(iso.rounded()),
             "portrait": portrait,
             "mirror": mirrored,
         ]
@@ -186,6 +215,9 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
         d.set(afAuto, forKey: "afAuto")
         d.set(focusPosition, forKey: "focusPosition")
         d.set(exposureBias, forKey: "exposureBias")
+        d.set(exposureManual, forKey: "exposureManual")
+        d.set(shutter, forKey: "shutter")
+        d.set(iso, forKey: "iso")
         d.set(portrait, forKey: "portrait")
         d.set(mirrored, forKey: "mirrored")
     }
@@ -288,12 +320,27 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
         let maxZ = min(dev.activeFormat.videoMaxZoomFactor, 8)
         let wbOK = dev.isLockingWhiteBalanceWithCustomDeviceGainsSupported
         let focusOK = dev.isLockingFocusWithCustomLensPositionSupported
+        let manualExpOK = dev.isExposureModeSupported(.custom)
+        let isoMin = dev.activeFormat.minISO, isoMax = max(dev.activeFormat.maxISO, dev.activeFormat.minISO + 1)
+        // Obturadores posibles: no más largos que un frame, ni más cortos que el mínimo del sensor.
+        let minDuration = dev.activeFormat.minExposureDuration.seconds
+        let shutters = Self.allShutters.filter { $0 >= Int(fps) && 1 / Double($0) >= minDuration }
         DispatchQueue.main.async {
             // Se conservan zoom, balance, enfoque y exposición: la cámara nueva arranca
             // en automático y hay que volver a aplicarlos.
             self.maxZoom = maxZ
             self.wbSupported = wbOK
             self.manualFocusSupported = focusOK
+            self.manualExposureSupported = manualExpOK
+            self.isoRange = isoMin...isoMax
+            if !shutters.isEmpty { self.shutterOptions = shutters }
+            // Ajustar a lo que permite esta configuración (p. ej. 1/50 no existe a 60 fps).
+            if !self.shutterOptions.contains(self.shutter) {
+                self.shutter = self.shutterOptions.first { $0 >= self.shutter } ?? self.shutterOptions.last ?? 60
+            }
+            if !self.isoRange.contains(self.iso) {
+                self.iso = min(max(self.iso, isoMin), isoMax)
+            }
             if self.zoom > maxZ { self.zoom = maxZ } else { self.applyZoom() }
             self.applyWhiteBalance()
             self.applyFocus()
@@ -380,12 +427,40 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
 
     private func applyExposure() {
         let locked = aeLocked, bias = exposureBias
+        let manual = exposureManual, shutter = self.shutter, iso = self.iso
         withDevice { d in
+            if manual && d.isExposureModeSupported(.custom) {
+                let f = d.activeFormat
+                let wanted = CMTime(value: 1, timescale: CMTimeScale(max(shutter, 1)))
+                // Nunca más largo que un frame: si no, iOS bajaría los fps.
+                let longest = CMTimeMinimum(f.maxExposureDuration, d.activeVideoMaxFrameDuration)
+                let duration = CMTimeMaximum(f.minExposureDuration, CMTimeMinimum(wanted, longest))
+                d.setExposureModeCustom(duration: duration, iso: min(max(iso, f.minISO), f.maxISO),
+                                        completionHandler: nil)
+                return
+            }
             let mode: AVCaptureDevice.ExposureMode = locked ? .locked : .continuousAutoExposure
             if d.isExposureModeSupported(mode) { d.exposureMode = mode }
             // La compensación funciona tanto en automático como con la exposición bloqueada.
             d.setExposureTargetBias(min(max(bias, d.minExposureTargetBias), d.maxExposureTargetBias),
                                     completionHandler: nil)
+        }
+    }
+
+    /// Toma el obturador y el ISO que está usando el automático, para pasar a manual sin saltos.
+    private func seedManualFromAuto() {
+        sessionQueue.async {
+            guard let d = self.device else { return }
+            let currentISO = d.iso
+            let currentDuration = d.exposureDuration.seconds
+            DispatchQueue.main.async {
+                if currentDuration > 0 {
+                    let den = Int((1 / currentDuration).rounded())
+                    self.shutter = self.shutterOptions.min { abs($0 - den) < abs($1 - den) } ?? self.shutter
+                }
+                // Asignar el ISO aplica la exposición manual aunque el valor no cambie.
+                self.iso = min(max(currentISO, self.isoRange.lowerBound), self.isoRange.upperBound)
+            }
         }
     }
 

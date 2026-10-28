@@ -184,10 +184,31 @@ struct ContentView: View {
 
         case .exposure:
             VStack(spacing: 6) {
-                valueRow(String(format: "%+.1f EV", Double(cam.exposureBias))) {
-                    Slider(value: $cam.exposureBias, in: -3...3, step: 0.1)
+                Picker("Modo", selection: $cam.exposureManual) {
+                    Text("Auto").tag(false)
+                    Text("Manual").tag(true)
                 }
-                Toggle("Bloquear exposición", isOn: $cam.aeLocked)
+                .pickerStyle(.segmented)
+                .disabled(!cam.manualExposureSupported)
+
+                if cam.exposureManual {
+                    HStack {
+                        Text("Obturador")
+                        Spacer()
+                        Picker("Obturador", selection: $cam.shutter) {
+                            ForEach(cam.shutterOptions, id: \.self) { Text("1/\($0)").tag($0) }
+                        }
+                        .pickerStyle(.menu)
+                    }
+                    valueRow("ISO \(Int(cam.iso))") {
+                        Slider(value: $cam.iso, in: cam.isoRange, step: 1)
+                    }
+                } else {
+                    valueRow(String(format: "%+.1f EV", Double(cam.exposureBias))) {
+                        Slider(value: $cam.exposureBias, in: -3...3, step: 0.1)
+                    }
+                    Toggle("Bloquear exposición", isOn: $cam.aeLocked)
+                }
             }
 
         case .color:

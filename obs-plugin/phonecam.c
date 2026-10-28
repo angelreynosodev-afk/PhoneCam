@@ -145,12 +145,14 @@ static void build_ctl(obs_data_t *settings, char *out, size_t size)
 	int ev10 = (int)floor(obs_data_get_double(settings, "ev") * 10.0 + 0.5);
 	snprintf(out, size,
 		 "{\"mode\":\"%s\",\"lens\":\"%s\",\"zoom100\":%d,\"wbAuto\":%s,\"temp\":%d,"
-		 "\"afAuto\":%s,\"focus100\":%d,\"ev10\":%d,\"aeLock\":%s,\"portrait\":%s,\"mirror\":%s}\n",
+		 "\"afAuto\":%s,\"focus100\":%d,\"ev10\":%d,\"aeLock\":%s,"
+		 "\"expManual\":%s,\"shutter\":%d,\"iso\":%d,\"portrait\":%s,\"mirror\":%s}\n",
 		 obs_data_get_string(settings, "mode"), obs_data_get_string(settings, "lens"), zoom100,
 		 obs_data_get_bool(settings, "wb_auto") ? "true" : "false", (int)obs_data_get_int(settings, "temp"),
 		 obs_data_get_bool(settings, "af_auto") ? "true" : "false", (int)obs_data_get_int(settings, "focus"),
 		 ev10, obs_data_get_bool(settings, "ae_lock") ? "true" : "false",
-		 obs_data_get_bool(settings, "portrait") ? "true" : "false",
+		 obs_data_get_bool(settings, "exp_manual") ? "true" : "false", (int)obs_data_get_int(settings, "shutter"),
+		 (int)obs_data_get_int(settings, "iso"), obs_data_get_bool(settings, "portrait") ? "true" : "false",
 		 obs_data_get_bool(settings, "mirror") ? "true" : "false");
 }
 
@@ -185,6 +187,12 @@ static void apply_state_task(void *param)
 			obs_data_set_double(s, "ev", (double)obs_data_get_int(st, "ev10") / 10.0);
 		if (obs_data_has_user_value(st, "aeLock"))
 			obs_data_set_bool(s, "ae_lock", obs_data_get_bool(st, "aeLock"));
+		if (obs_data_has_user_value(st, "expManual"))
+			obs_data_set_bool(s, "exp_manual", obs_data_get_bool(st, "expManual"));
+		if (obs_data_has_user_value(st, "shutter"))
+			obs_data_set_int(s, "shutter", obs_data_get_int(st, "shutter"));
+		if (obs_data_has_user_value(st, "iso"))
+			obs_data_set_int(s, "iso", obs_data_get_int(st, "iso"));
 		if (obs_data_has_user_value(st, "portrait"))
 			obs_data_set_bool(s, "portrait", obs_data_get_bool(st, "portrait"));
 		if (obs_data_has_user_value(st, "mirror"))
@@ -508,6 +516,9 @@ static void pc_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "focus", 50);
 	obs_data_set_default_double(settings, "ev", 0.0);
 	obs_data_set_default_bool(settings, "ae_lock", false);
+	obs_data_set_default_bool(settings, "exp_manual", false);
+	obs_data_set_default_int(settings, "shutter", 60);
+	obs_data_set_default_int(settings, "iso", 200);
 	obs_data_set_default_bool(settings, "portrait", false);
 	obs_data_set_default_bool(settings, "mirror", false);
 }
@@ -516,6 +527,17 @@ static bool wb_auto_modified(obs_properties_t *props, obs_property_t *p, obs_dat
 {
 	UNUSED_PARAMETER(p);
 	obs_property_set_enabled(obs_properties_get(props, "temp"), !obs_data_get_bool(settings, "wb_auto"));
+	return true;
+}
+
+static bool exp_manual_modified(obs_properties_t *props, obs_property_t *p, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(p);
+	bool manual = obs_data_get_bool(settings, "exp_manual");
+	obs_property_set_enabled(obs_properties_get(props, "ev"), !manual);
+	obs_property_set_enabled(obs_properties_get(props, "ae_lock"), !manual);
+	obs_property_set_enabled(obs_properties_get(props, "shutter"), manual);
+	obs_property_set_enabled(obs_properties_get(props, "iso"), manual);
 	return true;
 }
 
@@ -572,6 +594,21 @@ static obs_properties_t *pc_properties(void *unused)
 	p = obs_properties_add_float_slider(expo, "ev", "Compensación (EV)", -3.0, 3.0, 0.1);
 	obs_property_set_long_description(p, "Negativo = más oscuro. Si la imagen se quema, bájalo.");
 	obs_properties_add_bool(expo, "ae_lock", "Bloquear exposición");
+
+	p = obs_properties_add_bool(expo, "exp_manual", "Exposición manual (obturador e ISO)");
+	obs_property_set_modified_callback(p, exp_manual_modified);
+	p = obs_properties_add_list(expo, "shutter", "Obturador", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	static const int shutters[] = {25, 30, 50, 60, 100, 120, 250, 500, 1000, 2000};
+	for (size_t i = 0; i < sizeof(shutters) / sizeof(shutters[0]); i++) {
+		char label[16];
+		snprintf(label, sizeof(label), "1/%d", shutters[i]);
+		obs_property_list_add_int(p, label, shutters[i]);
+	}
+	obs_property_set_long_description(
+		p, "Con luces de 50 Hz usa 1/50 o 1/100 para evitar parpadeo. No puede ser más largo que un frame "
+		   "(a 60 fps, mínimo 1/60): si eliges uno imposible, el iPhone usa el más cercano.");
+	p = obs_properties_add_int_slider(expo, "iso", "ISO", 25, 3200, 1);
+	obs_property_set_long_description(p, "El iPhone lo ajusta al rango que permita el lente y la resolución.");
 	obs_properties_add_group(props, "exposure_group", "Exposición", OBS_GROUP_NORMAL, expo);
 
 	obs_properties_t *conn = obs_properties_create();

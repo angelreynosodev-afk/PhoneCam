@@ -4,7 +4,8 @@ Usa un iPhone como webcam para OBS, con baja latencia y el menor consumo posible
 La misma app sirve para un iPhone viejo (iOS 15, por ejemplo un 7 Plus) y para uno nuevo (por ejemplo un 17 Pro).
 
 - **Cámara:** resolución hasta 4K · 60 fps, lentes (0.5x · 1x · 2x · 4x · Frontal, según el iPhone), zoom,
-  enfoque automático o manual, compensación de exposición, balance de blancos y modos vertical y espejo.
+  enfoque automático o manual, exposición automática (con compensación) o manual (obturador e ISO),
+  balance de blancos y modos vertical y espejo.
 - **Control desde OBS:** todos esos ajustes también se pueden cambiar desde las propiedades de la fuente.
 - **Latencia:** unos 100–200 ms con el plugin, parecido a Camo.
 - **Consumo:** el iPhone codifica por hardware y el PC decodifica con la GPU. No hay programas en segundo plano
@@ -91,7 +92,7 @@ En las propiedades de la fuente:
 |---|---|
 | **Cámara** | Resolución, lente, zoom, vertical (9:16), espejo, balance de blancos automático o en Kelvin |
 | **Enfoque** | Automático, o manual con distancia de 0 (cerca) a 100 (lejos) |
-| **Exposición** | Compensación de −3 a +3 EV y bloqueo |
+| **Exposición** | Automática: compensación de −3 a +3 EV y bloqueo. Manual: obturador (1/25 a 1/2000) e ISO |
 | **Conexión** | Dirección, puerto y "Decodificar con la GPU" |
 
 - **OBS manda:** al conectarse, el iPhone toma los ajustes guardados en la escena. Si cambias algo en el teléfono,
@@ -164,6 +165,9 @@ Los controles están abajo y son compactos, como en la app Cámara, para que se 
   El bloqueo automático de pantalla ya viene desactivado por la app.
 - El iPhone **solo codifica mientras OBS está conectado**: si nadie está mirando, casi no gasta batería.
 - Déjalo conectado al cargador y, si puedes, sin funda, para que se caliente menos.
-- **Imagen quemada:** baja la exposición (EV) en **Luz**. **Foco que salta** al mover las manos: en **Foco**,
+- **Luces que parpadean o bandas en la imagen:** en **Luz › Manual**, usa obturador **1/50 o 1/100**
+  (red eléctrica de 50 Hz, como en Argentina) o **1/60 o 1/120** (60 Hz). A 60 fps, 1/100 o 1/120.
+  Al pasar a manual, la app arranca con el obturador y el ISO que estaba usando el automático.
+- **Imagen quemada:** baja la exposición (EV) en **Luz**, o el ISO en manual. **Foco que salta** al mover las manos: en **Foco**,
   desactiva el automático y ajusta la distancia.
 - La cámara frontal del 7 Plus y de otros modelos tiene foco fijo, así que ahí el foco manual no hace nada.
